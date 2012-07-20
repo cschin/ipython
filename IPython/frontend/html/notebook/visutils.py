@@ -256,13 +256,11 @@ class InputWidget(NotebookVisualWidget):
         container_name = self._vis.container.name
         py_code = self.get_py_code_for_widget
         js_str  = """(function() { var vc = IPython.vis_utils.name_to_viscell["%s"];""" % (container_name)
-        js_str += """vc.data.set_value = function () {""" 
         js_str += """var vc = IPython.vis_utils.name_to_viscell["%s"];""" % (container_name)
         js_str += """var vis_code = "%s";""" % py_code
         js_str += """vc.execute_py(vis_code);""" 
         js_str += """vc.execute_py( "_w.value =" + JSON.stringify( $("#%s").attr("value") ) );""" % ( self.name) 
-        js_str += "}) ();" 
-
+        js_str += "}  ) ();" 
         return js_str
 
     def update_value(self):
