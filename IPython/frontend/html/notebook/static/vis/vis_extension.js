@@ -115,7 +115,6 @@ var IPython = (function (IPython) {
     };  
 
     VisCell.prototype._handle_execute_reply = function (content) {
-        this.set_input_prompt(content.execution_count);
         this.element.removeClass("running");
     }
 
