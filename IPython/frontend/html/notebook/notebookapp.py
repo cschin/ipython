@@ -48,9 +48,11 @@ from .handlers import (LoginHandler, LogoutHandler,
     MainKernelHandler, KernelHandler, KernelActionHandler, IOPubHandler,
     ShellHandler, NotebookRootHandler, NotebookHandler, NotebookCopyHandler,
     RSTHandler, AuthenticatedFileHandler, PrintNotebookHandler,
-    MainClusterHandler, ClusterProfileHandler, ClusterActionHandler
+    MainClusterHandler, ClusterProfileHandler, ClusterActionHandler,
+    FileFindHandler,
 )
-from .notebookmanager import NotebookManager
+from .nbmanager import NotebookManager
+from .filenbmanager import FileNotebookManager
 from .clustermanager import ClusterManager
 
 from IPython.config.application import catch_config_error, boolean_flag
@@ -65,8 +67,13 @@ from IPython.zmq.ipkernel import (
     aliases as ipkernel_aliases,
     IPKernelApp
 )
-from IPython.utils.traitlets import Dict, Unicode, Integer, List, Enum, Bool
+from IPython.utils.importstring import import_item
+from IPython.utils.traitlets import (
+    Dict, Unicode, Integer, List, Enum, Bool,
+    DottedObjectName
+)
 from IPython.utils import py3compat
+from IPython.utils.path import filefind
 
 #-----------------------------------------------------------------------------
 # Module globals
@@ -140,15 +147,6 @@ class NotebookWebApplication(web.Application):
             (r"/clusters/%s/%s" % (_profile_regex, _cluster_action_regex), ClusterActionHandler),
             (r"/clusters/%s" % _profile_regex, ClusterProfileHandler),
         ]
-        settings = dict(
-            template_path=os.path.join(os.path.dirname(__file__), "templates"),
-            static_path=os.path.join(os.path.dirname(__file__), "static"),
-            cookie_secret=os.urandom(1024),
-            login_url="/login",
-        )
-
-        # allow custom overrides for the tornado web app.
-        settings.update(settings_overrides)
 
         # Python < 2.6.5 doesn't accept unicode keys in f(**kwargs), and
         # base_project_url will always be unicode, which will in turn
@@ -160,6 +158,17 @@ class NotebookWebApplication(web.Application):
         # and thus guaranteed to be ASCII: 'héllo' is really 'h%C3%A9llo'.
         base_project_url = py3compat.unicode_to_str(base_project_url, 'ascii')
         
+        settings = dict(
+            template_path=os.path.join(os.path.dirname(__file__), "templates"),
+            static_path=ipython_app.static_file_path,
+            static_handler_class = FileFindHandler,
+            cookie_secret=os.urandom(1024),
+            login_url="%s/login"%(base_project_url.rstrip('/')),
+        )
+
+        # allow custom overrides for the tornado web app.
+        settings.update(settings_overrides)
+
         # prepend base_project_url onto the patterns that we match
         new_handlers = []
         for handler in handlers:
@@ -211,7 +220,7 @@ flags['read-only'] = (
 )
 
 # Add notebook manager flags
-flags.update(boolean_flag('script', 'NotebookManager.save_script',
+flags.update(boolean_flag('script', 'FileNotebookManager.save_script',
                'Auto-save a .py script everytime the .ipynb notebook is saved',
                'Do not auto-save .py scripts for every notebook'))
 
@@ -256,7 +265,8 @@ class NotebookApp(BaseIPythonApplication):
     """
     examples = _examples
     
-    classes = IPythonConsoleApp.classes + [MappingKernelManager, NotebookManager]
+    classes = IPythonConsoleApp.classes + [MappingKernelManager, NotebookManager,
+        FileNotebookManager]
     flags = Dict(flags)
     aliases = Dict(aliases)
 
@@ -354,6 +364,20 @@ class NotebookApp(BaseIPythonApplication):
     websocket_host = Unicode("", config=True,
         help="""The hostname for the websocket server."""
     )
+    
+    extra_static_paths = List(Unicode, config=True,
+        help="""Extra paths to search for serving static files.
+        
+        This allows adding javascript/css to be available from the notebook server machine,
+        or overriding individual files in the IPython"""
+    )
+    def _extra_static_paths_default(self):
+        return [os.path.join(self.profile_dir.location, 'static')]
+    
+    @property
+    def static_file_path(self):
+        """return extra paths + the default location"""
+        return self.extra_static_paths + [os.path.join(os.path.dirname(__file__), "static")]
 
     mathjax_url = Unicode("", config=True,
         help="""The url for MathJax.js."""
@@ -361,13 +385,11 @@ class NotebookApp(BaseIPythonApplication):
     def _mathjax_url_default(self):
         if not self.enable_mathjax:
             return u''
-        static_path = self.webapp_settings.get("static_path", os.path.join(os.path.dirname(__file__), "static"))
         static_url_prefix = self.webapp_settings.get("static_url_prefix",
                                                      "/static/")
-        if os.path.exists(os.path.join(static_path, 'mathjax', "MathJax.js")):
-            self.log.info("Using local MathJax")
-            return static_url_prefix+u"mathjax/MathJax.js"
-        else:
+        try:
+            mathjax = filefind(os.path.join('mathjax', 'MathJax.js'), self.static_file_path)
+        except IOError:
             if self.certfile:
                 # HTTPS: load from Rackspace CDN, because SSL certificate requires it
                 base = u"https://c328740.ssl.cf1.rackcdn.com"
@@ -377,6 +399,9 @@ class NotebookApp(BaseIPythonApplication):
             url = base + u"/mathjax/latest/MathJax.js"
             self.log.info("Using MathJax from CDN: %s", url)
             return url
+        else:
+            self.log.info("Using local MathJax from %s" % mathjax)
+            return static_url_prefix+u"mathjax/MathJax.js"
     
     def _mathjax_url_changed(self, name, old, new):
         if new and not self.enable_mathjax:
@@ -384,6 +409,10 @@ class NotebookApp(BaseIPythonApplication):
             self.mathjax_url = u''
         else:
             self.log.info("Using MathJax: %s", new)
+
+    notebook_manager_class = DottedObjectName('IPython.frontend.html.notebook.filenbmanager.FileNotebookManager',
+        config=True,
+        help='The notebook manager class to use.')
 
     def parse_command_line(self, argv=None):
         super(NotebookApp, self).parse_command_line(argv)
@@ -411,9 +440,10 @@ class NotebookApp(BaseIPythonApplication):
             config=self.config, log=self.log, kernel_argv=self.kernel_argv,
             connection_dir = self.profile_dir.security_dir,
         )
-        self.notebook_manager = NotebookManager(config=self.config, log=self.log)
-        self.log.info("Serving notebooks from %s", self.notebook_manager.notebook_dir)
-        self.notebook_manager.list_notebooks()
+        kls = import_item(self.notebook_manager_class)
+        self.notebook_manager = kls(config=self.config, log=self.log)
+        self.notebook_manager.log_info()
+        self.notebook_manager.load_notebook_names()
         self.cluster_manager = ClusterManager(config=self.config, log=self.log)
         self.cluster_manager.update_profiles()
 
@@ -447,7 +477,7 @@ class NotebookApp(BaseIPythonApplication):
         for port in random_ports(self.port, self.port_retries+1):
             try:
                 self.http_server.listen(port, self.ip)
-            except socket.error, e:
+            except socket.error as e:
                 if e.errno != errno.EADDRINUSE:
                     raise
                 self.log.info('The port %i is already in use, trying another random port.' % port)
@@ -560,13 +590,8 @@ class NotebookApp(BaseIPythonApplication):
                 browser = None
 
             if self.file_to_run:
-                filename, _ = os.path.splitext(os.path.basename(self.file_to_run))
-                for nb in self.notebook_manager.list_notebooks():
-                    if filename == nb['name']:
-                        url = nb['notebook_id']
-                        break
-                else:
-                    url = ''
+                name, _ = os.path.splitext(os.path.basename(self.file_to_run))
+                url = self.notebook_manager.rev_mapping.get(name, '')
             else:
                 url = ''
             if browser:

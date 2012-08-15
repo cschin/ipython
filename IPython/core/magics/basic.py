@@ -22,7 +22,7 @@ from pprint import pformat
 from IPython.core import magic_arguments
 from IPython.core.error import UsageError
 from IPython.core.magic import Magics, magics_class, line_magic, magic_escapes
-from IPython.utils.text import format_screen
+from IPython.utils.text import format_screen, dedent, indent
 from IPython.core import magic_arguments, page
 from IPython.testing.skipdoctest import skip_doctest
 from IPython.utils.ipstruct import Struct
@@ -65,6 +65,8 @@ class BasicMagics(Magics):
         --------
         ::
           In [1]: %alias_magic t timeit
+          Created `%t` as an alias for `%timeit`.
+          Created `%%t` as an alias for `%%timeit`.
 
           In [2]: %t -n1 pass
           1 loops, best of 3: 954 ns per loop
@@ -77,12 +79,14 @@ class BasicMagics(Magics):
           In [4]: %alias_magic --cell whereami pwd
           UsageError: Cell magic function `%%pwd` not found.
           In [5]: %alias_magic --line whereami pwd
+          Created `%whereami` as an alias for `%pwd`.
 
           In [6]: %whereami
           Out[6]: u'/home/testuser'
         """
         args = magic_arguments.parse_argstring(self.alias_magic, line)
         shell = self.shell
+        mman = self.shell.magics_manager
         escs = ''.join(magic_escapes.values())
 
         target = args.target.lstrip(escs)
@@ -109,18 +113,16 @@ class BasicMagics(Magics):
             args.cell = bool(m_cell)
 
         if args.line:
-            def wrapper(line): return m_line(line)
-            wrapper.__name__ = str(name)
-            wrapper.__doc__ = "Alias for `%s%s`." % \
-                              (magic_escapes['line'], target)
-            shell.register_magic_function(wrapper, 'line', name)
+            mman.register_alias(name, target, 'line')
+            print('Created `%s%s` as an alias for `%s%s`.' % (
+                magic_escapes['line'], name,
+                magic_escapes['line'], target))
 
         if args.cell:
-            def wrapper(line, cell): return m_cell(line, cell)
-            wrapper.__name__ = str(name)
-            wrapper.__doc__ = "Alias for `%s%s`." % \
-                              (magic_escapes['cell'], target)
-            shell.register_magic_function(wrapper, 'cell', name)
+            mman.register_alias(name, target, 'cell')
+            print('Created `%s%s` as an alias for `%s%s`.' % (
+                magic_escapes['cell'], name,
+                magic_escapes['cell'], target))
 
     def _lsmagic(self):
         mesc = magic_escapes['line']
@@ -147,15 +149,17 @@ class BasicMagics(Magics):
         docs = mman.lsmagic_docs(brief, missing='No documentation')
 
         if rest:
-            format_string = '**%s%s**::\n\n\t%s\n\n'
+            format_string = '**%s%s**::\n\n%s\n\n'
         else:
-            format_string = '%s%s:\n\t%s\n'
+            format_string = '%s%s:\n%s\n'
 
         return ''.join(
-            [format_string % (magic_escapes['line'], fname, fndoc)
+            [format_string % (magic_escapes['line'], fname,
+                              indent(dedent(fndoc)))
              for fname, fndoc in sorted(docs['line'].items())]
             +
-            [format_string % (magic_escapes['cell'], fname, fndoc)
+            [format_string % (magic_escapes['cell'], fname,
+                              indent(dedent(fndoc)))
              for fname, fndoc in sorted(docs['cell'].items())]
         )
 
@@ -230,7 +234,7 @@ of any of them, type %magic_name?, e.g. '%cd?'.
 
 Currently the magic system has the following functions:""",
        magic_docs,
-       "Summary of magic functions (from %slsmagic):",
+       "Summary of magic functions (from %slsmagic):" % magic_escapes['line'],
        self._lsmagic(),
        ]
         page.page('\n'.join(out))

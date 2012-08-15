@@ -452,6 +452,36 @@ class MagicsManager(Configurable):
         setattr(self.user_magics, name, meth)
         record_magic(self.magics, 'line', name, meth)
 
+    def register_alias(self, alias_name, magic_name, magic_kind='line'):
+        """Register an alias to a magic function.
+
+        The alias is an instance of :class:`MagicAlias`, which holds the
+        name and kind of the magic it should call. Binding is done at
+        call time, so if the underlying magic function is changed the alias
+        will call the new function.
+
+        Parameters
+        ----------
+        alias_name : str
+          The name of the magic to be registered.
+
+        magic_name : str
+          The name of an existing magic.
+
+        magic_kind : str
+          Kind of magic, one of 'line' or 'cell'
+        """
+
+        # `validate_type` is too permissive, as it allows 'line_cell'
+        # which we do not handle.
+        if magic_kind not in magic_kinds:
+            raise ValueError('magic_kind must be one of %s, %s given' %
+                             magic_kinds, magic_kind)
+
+        alias = MagicAlias(self.shell, magic_name, magic_kind)
+        setattr(self.user_magics, alias_name, alias)
+        record_magic(self.magics, magic_kind, alias_name, alias)
+
 # Key base class that provides the central functionality for magics.
 
 class Magics(object):
@@ -568,7 +598,7 @@ class Magics(object):
 
         mode = kw.get('mode','string')
         if mode not in ['string','list']:
-            raise ValueError,'incorrect mode given: %s' % mode
+            raise ValueError('incorrect mode given: %s' % mode)
         # Get options
         list_all = kw.get('list_all',0)
         posix = kw.get('posix', os.name == 'posix')
@@ -584,7 +614,7 @@ class Magics(object):
             # Do regular option processing
             try:
                 opts,args = getopt(argv, opt_str, long_opts)
-            except GetoptError,e:
+            except GetoptError as e:
                 raise UsageError('%s ( allowed: "%s" %s)' % (e.msg,opt_str,
                                         " ".join(long_opts)))
             for o,a in opts:
@@ -615,3 +645,39 @@ class Magics(object):
         if fn not in self.lsmagic():
             error("%s is not a magic function" % fn)
         self.options_table[fn] = optstr
+
+class MagicAlias(object):
+    """An alias to another magic function.
+
+    An alias is determined by its magic name and magic kind. Lookup
+    is done at call time, so if the underlying magic changes the alias
+    will call the new function.
+
+    Use the :meth:`MagicsManager.register_alias` method or the
+    `%alias_magic` magic function to create and register a new alias.
+    """
+    def __init__(self, shell, magic_name, magic_kind):
+        self.shell = shell
+        self.magic_name = magic_name
+        self.magic_kind = magic_kind
+
+        self.pretty_target = '%s%s' % (magic_escapes[self.magic_kind], self.magic_name)
+        self.__doc__ = "Alias for `%s`." % self.pretty_target
+
+        self._in_call = False
+
+    def __call__(self, *args, **kwargs):
+        """Call the magic alias."""
+        fn = self.shell.find_magic(self.magic_name, self.magic_kind)
+        if fn is None:
+            raise UsageError("Magic `%s` not found." % self.pretty_target)
+
+        # Protect against infinite recursion.
+        if self._in_call:
+            raise UsageError("Infinite recursion detected; "
+                             "magic aliases cannot call themselves.")
+        self._in_call = True
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            self._in_call = False
